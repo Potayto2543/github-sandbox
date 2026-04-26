@@ -12,7 +12,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          fetch-depth: 0          # FULL CLONE, needed for merging
+          ref: ${{ github.ref }}  # Ensures workflow is on the real branch
           token: ${{ secrets.GITHUB_TOKEN }}
+
 
       - name: Install aria2
         run: sudo apt-get install -y aria2
@@ -80,13 +83,15 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          # Pull remote changes first (handles newer commits)
-          git fetch origin $BRANCH
-          git merge origin/$BRANCH --strategy-option theirs --allow-unrelated-histories || true
+          # Make sure we are ON the actual branch (not detached HEAD)
+          git checkout $BRANCH
+
+          # Pull latest remote commits safely
+          git pull origin $BRANCH --rebase || true
 
           git add downloads/
           git commit -m "Add downloaded files from commit [skip ci]" || echo "Nothing to commit"
 
           echo "🚀 Pushing to branch: $BRANCH"
-          git push origin HEAD:$BRANCH
+          git push origin $BRANCH
 
