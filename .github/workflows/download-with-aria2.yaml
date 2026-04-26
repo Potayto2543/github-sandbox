@@ -1,4 +1,4 @@
-name: Download & Chunked Push (First 20 Parts)
+name: Download & Chunked Push (Remaining Files 21-27)
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - "**" # Trigger on any branch push
 
 jobs:
-  save-file-chunked-1:
+  save-file-chunked-2:
     runs-on: ubuntu-latest
     permissions:
       contents: write # Needed to push commits
@@ -15,15 +15,15 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0          # Fetch full history, needed for merging/rebasing
+          fetch-depth: 0          # Fetch full history
           ref: ${{ github.ref }}  # Ensure we are on the correct branch
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install aria2
         run: sudo apt-get install -y aria2
 
-      - name: Extract URLs and download files
-        id: download_files # Added ID for potential future use
+      - name: Extract URLs and download files (Redundant, but ensures files are present)
+        id: download_files
         run: |
           MSG=$(git log -1 --pretty=%B)
           echo "Commit message: $MSG"
@@ -42,10 +42,9 @@ jobs:
           echo "Download Mode: $MODE"
           mkdir -p downloads tmp_downloads
 
-          # Handle multiple URLs if present in the URL_LINE
           IFS=' ' read -r -a urls <<< "$URL_LINE"
           for URL in "${urls[@]}"; do
-            if [ -z "$URL" ]; then continue; fi # Skip empty URLs
+            if [ -z "$URL" ]; then continue; fi
             FILENAME=$(basename "$URL")
             echo "⬇️ Downloading $URL to tmp_downloads/$FILENAME"
 
@@ -58,119 +57,107 @@ jobs:
               "$URL"
           done
 
-          # Process downloaded files: Unzip and split if necessary
           if [ "$MODE" = "zip" ]; then
             echo "Processing downloaded ZIP archive..."
-            # Assuming only one zip file if MODE is zip
             ZIP_FILE=$(find tmp_downloads -maxdepth 1 -type f -name '*.zip' | head -n 1)
             if [ -n "$ZIP_FILE" ]; then
-              ARCHIVE_NAME="tmp_downloads/archive_$(date +%Y%m%d_%H%M%S).zip"
               echo "Unzipping $ZIP_FILE..."
-              unzip "$ZIP_FILE" -d tmp_downloads/ # Unzip into tmp_downloads
-              rm "$ZIP_FILE" # Remove the original zip
+              unzip "$ZIP_FILE" -d tmp_downloads/
+              rm "$ZIP_FILE"
             else
               echo "Warning: Expected a zip file in tmp_downloads but found none."
             fi
           fi
 
-          # Split any file over 90MB into parts and move to 'downloads' folder
           echo "Splitting large files into ~90MB chunks..."
-          mkdir -p downloads # Ensure downloads directory exists
+          mkdir -p downloads
           for FILE in tmp_downloads/*; do
-            [ -f "$FILE" ] || continue # Ensure it's a file
+            [ -f "$FILE" ] || continue
             SIZE=$(stat -c%s "$FILE")
-            LIMIT=$((90 * 1024 * 1024)) # 90MB limit
+            LIMIT=$((90 * 1024 * 1024))
             BASENAME=$(basename "$FILE")
 
             if [ "$SIZE" -gt "$LIMIT" ]; then
               echo "✂️ Splitting '$BASENAME' ($(( SIZE / 1024 / 1024 ))MB)..."
-              # Use zip -s to split files. The output will be BASENAME.zip, BASENAME.z01, BASENAME.z02, ...
-              # We need to ensure these go into the 'downloads' directory directly.
-              # '-j' junks directories, preserving only filenames.
-              # The command 'zip -s 90m "downloads/${BASENAME}.zip" -j "$FILE"' might not work as expected
-              # for splitting in place. A more reliable method:
-              
-              # Create a temporary directory for parts, then zip it.
               PART_DIR="tmp_parts_${BASENAME}"
               mkdir -p "$PART_DIR"
               mv "$FILE" "$PART_DIR/"
-              
-              echo "Creating zip parts for $BASENAME into 'downloads/'"
-              # The actual split command requires the source files to be in a folder
-              # So we zip the content of PART_DIR into downloads folder
               (cd "$PART_DIR" && zip -r -s 90m "../downloads/${BASENAME}.zip" .)
-              
-              rm -rf "$PART_DIR" # Clean up temporary directory
-              
+              rm -rf "$PART_DIR"
               echo "✅ Created parts for $BASENAME in downloads/ folder."
             else
               echo "Copying '$BASENAME' to downloads/ (under 90MB)"
               cp "$FILE" "downloads/"
             fi
           done
+          rm -rf tmp_downloads
 
-          rm -rf tmp_downloads # Clean up temporary download directory
-
-          # --- IMPORTANT FOR CHUNKING ---
-          # List all files in the downloads directory for debugging
           echo "Files prepared in downloads/:"
           ls -lh downloads/
 
-          # This is the critical part for chunking:
-          # We need to select only the first 20 files for this commit.
-          # Assuming files are named in a sortable manner (e.g., .z01, .z02...)
-          # Use 'find', 'sort -V' (version sort) to get a reliable order.
-          # 'head -n 20' selects the first 20.
-          # 'paste -sd ' '' joins them with a space.
+          # --- CRITICAL FOR CHUNKING THE REST ---
+          # We need to identify the files NOT committed in the previous step.
+          # The most reliable way is to re-list all files, then remove the ones
+          # known to be in the previous commit (first 20).
+
+          echo "Selecting remaining files (21-27) for this commit..."
+          # This assumes the previous commit added files named 'Overwatch*z*' and the rest are also named similarly.
+          # We get ALL files matching the pattern, then list the first 20 and *exclude* them.
           
-          echo "Selecting the first 20 files for this commit..."
-          FIRST_20_FILES=$(find downloads/ -maxdepth 1 -type f -name 'Overwatch*z*' | sort -V | head -n 20 | paste -sd ' ')
+          ALL_FILES=$(find downloads/ -maxdepth 1 -type f -name 'Overwatch*z*' | sort -V)
           
-          if [ -z "$FIRST_20_FILES" ]; then
-            echo "No files found matching 'Overwatch*z*' pattern to add."
-            # If there are no split files, we might have single files under 90MB.
-            # Let's also consider those for adding if the zip splitting didn't happen.
-            # Fallback: add up to 20 of any file in downloads/
-            echo "Attempting to select up to 20 files from 'downloads/' directory as a fallback."
-            FIRST_20_FILES=$(find downloads/ -maxdepth 1 -type f | sort -V | head -n 20 | paste -sd ' ')
-            if [ -z "$FIRST_20_FILES" ]; then
-                echo "No files found in 'downloads/' to add. Exiting step."
-                exit 0 # Exit gracefully if nothing to add
-            fi
+          # Get the first 20 files list from the previous step (read from file for simplicity)
+          # IMPORTANT: This file must have been created by the PREVIOUS RUN of Version 1 workflow.
+          # If you are running this independently, you'd need to know the exact filenames.
+          if [ -f /tmp/first_20_files_list.txt ]; then
+              PREVIOUS_FILES=$(cat /tmp/first_20_files_list.txt)
+              
+              # Build the list of remaining files
+              REMAINING_FILES=""
+              for f in $ALL_FILES; do
+                  # Check if the file 'f' is in the PREVIOUS_FILES list
+                  if ! echo "$PREVIOUS_FILES" | grep -qF "$f"; then
+                      REMAINING_FILES="$REMAINING_FILES \"$f\"" # Add with quotes to handle spaces
+                  fi
+              done
+              
+              # Clean up the temporary file after reading
+              rm -f /tmp/first_20_files_list.txt
+              
+              if [ -z "$REMAINING_FILES" ]; then
+                  echo "No remaining files found to add. Previous batch may have included all files."
+                  exit 0 # Exit gracefully if nothing left
+              fi
+          else
+              echo "Error: /tmp/first_20_files_list.txt not found. Cannot determine remaining files."
+              echo "Please ensure the previous workflow run (Version 1) completed and created this file."
+              exit 1
           fi
 
-          echo "Files to be added in this commit (first 20):"
-          echo "$FIRST_20_FILES"
+          echo "Files to be added in this commit (remaining):"
+          echo $REMAINING_FILES
           
-          # Store this list for the next step if needed, though we're only doing one commit for now.
-          echo "$FIRST_20_FILES" > /tmp/first_20_files_list.txt
-          
-          # Git add for these specific files
-          echo "Adding selected files to Git staging area..."
-          git add $FIRST_20_FILES
+          # Git add for the remaining files
+          echo "Adding remaining files to Git staging area..."
+          git add $REMAINING_FILES
 
-      - name: Commit and Push First 20 Parts
+      - name: Commit and Push Remaining Files
         run: |
           BRANCH="${GITHUB_REF_NAME}"
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          # Ensure we are on the correct branch
           git checkout $BRANCH
-
-          # Pull latest remote commits safely and rebase
-          # Using --rebase is safer in CI to avoid merge commits
           git pull origin $BRANCH --rebase || echo "No existing remote branch found or pull failed, proceeding."
 
-          # Check if there are staged files to commit
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
-            echo "Committing the first 20 downloaded files..."
-            git commit -m "Add first 20 downloaded files [skip ci]"
+            echo "Committing the remaining downloaded files..."
+            git commit -m "Add remaining downloaded files (21-27) [skip ci]"
 
-            echo "🚀 Pushing the first 20 files to the 'downloads' branch..."
-            # Push to a dedicated branch for these files
+            echo "🚀 Pushing the remaining files to the 'downloads' branch..."
+            # Push to the same dedicated branch
             git push origin HEAD:downloads
-            echo "✅ Successfully pushed the first 20 files to the 'downloads' branch."
+            echo "✅ Successfully pushed the remaining files to the 'downloads' branch."
           fi
