@@ -1,4 +1,4 @@
-name: Download & Manual Chunked Push
+name: Download & Chunked Push (First 20 Parts)
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - "**" # Trigger on any branch push
 
 jobs:
-  save-file-manual-chunk:
+  save-file-chunked-1:
     runs-on: ubuntu-latest
     permissions:
       contents: write # Needed to push commits
@@ -15,26 +15,20 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0          # Fetch full history
+          fetch-depth: 0          # Fetch full history, needed for merging/rebasing
           ref: ${{ github.ref }}  # Ensure we are on the correct branch
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install aria2
         run: sudo apt-get install -y aria2
 
-      - name: Extract URLs and download files (manual parts)
-        id: download_files
+      - name: Extract URLs and download files
+        id: download_files # Added ID for potential future use
         run: |
           MSG=$(git log -1 --pretty=%B)
           echo "Commit message: $MSG"
 
-          # --- New logic for manual part specification ---
-          if echo "$MSG" | grep -qP 'download-parts:'; then
-            MODE="manual_parts"
-            PART_SPEC=$(echo "$MSG" | grep -oP 'download-parts:\s*\K.*')
-            echo "Manual parts specification detected: $PART_SPEC"
-          # --- Keep existing logic for full download ---
-          elif echo "$MSG" | grep -qP 'download-zip:'; then
+          if echo "$MSG" | grep -qP 'download-zip:'; then
             MODE="zip"
             URL_LINE=$(echo "$MSG" | grep -oP 'download-zip:\s*\K.*')
           elif echo "$MSG" | grep -qP 'download:'; then
@@ -48,218 +42,115 @@ jobs:
           echo "Download Mode: $MODE"
           mkdir -p downloads tmp_downloads
 
-          # --- Download files ---
-          if [ "$MODE" = "manual_parts" ]; then
-              # If manual parts are specified, we assume the base URLs and naming convention are known.
-              # This is a simplification; in reality, you might need a way to get the base URL
-              # or assume a fixed pattern. For this example, let's assume the parts are like:
-              # e.g., Overwatch_Part_21.zip, Overwatch_Part_22.zip, etc.
-              # And we need a base URL if not provided. Let's assume a placeholder URL for demonstration.
-              # YOU WILL NEED TO REPLACE THIS with your actual base URL or logic to find part URLs.
-              
-              # Placeholder for where the parts come from.
-              # If you have a list of URLs for specific parts, you'd put them here.
-              # Example: If the URL_LINE was "http://example.com/files/Overwatch.zip" for a full download,
-              # and now it's "download-parts: 21-27", we need to construct the part URLs.
-              
-              # --- THIS IS THE PART YOU NEED TO CUSTOMIZE ---
-              # Example logic: Assuming the original file was named 'large_archive.zip' and was split.
-              # And the parts are named 'large_archive.z01', 'large_archive.z02', etc.
-              # If your commit message is "download-parts: 21-27", you'd need to know the base name.
-              # For now, let's assume a fixed pattern and a way to derive it.
-              
-              # Let's assume the commit message for a *full* download might have been:
-              # "download: http://example.com/files/large_archive.zip"
-              # And you want to download parts 21-27.
-              # We'll need to reconstruct the URLs. This is the trickiest part of manual specification.
-              
-              # A robust way: If the URL line from a previous 'download:' command is available, use it.
-              # Or, ask the user to provide the base URL or part URLs in the commit message.
-              
-              # For simplicity in this example, let's assume:
-              # 1. The original download command was 'download: http://your-server.com/files/archive.zip'
-              # 2. The archive splits into archive.z01, archive.z02, ... archive.z27
-              # 3. The commit message for parts 21-27 is 'download-parts: 21-27'
-              
-              # We need to GET THE BASE URL from somewhere.
-              # If you always use 'download:' first, we can try to retrieve that URL.
-              # For this example, let's hardcode a placeholder and mention you need to adapt it.
-              
-              echo "Manually downloading specified parts..."
-              # Placeholder URL - REPLACE WITH YOUR ACTUAL BASE URL
-              BASE_DOWNLOAD_URL="https://waifu.ayakamods.com/public.php/dav/files/obcCESBTj9Hy5oT/Overwatch%20Beta%20(COMPILED%20BUILD)%20UPDATED%204.20.26.zip" # <<<--- REPLACE THIS
-              
-              # Extract numbers from PART_SPEC (e.g., "21-27" -> 21, 27)
-              START_PART=$(echo "$PART_SPEC" | cut -d'-' -f1)
-              END_PART=$(echo "$PART_SPEC" | cut -d'-' -f2)
-              
-              # Convert to 0-indexed or 1-indexed as per your file naming.
-              # Assuming your files are like .z01, .z02, ...
-              # We need to map the part number to the suffix.
-              # E.g., part 1 -> .z01, part 2 -> .z02, part 21 -> .z21
-              
-              for i in $(seq "$START_PART" "$END_PART"); do
-                  # Format the suffix: pad with zero if needed (e.g., 1 -> 01, 10 -> 10)
-                  SUFFIX=$(printf "%02d" "$i")
-                  PART_URL="${BASE_DOWNLOAD_URL%.zip}.z${SUFFIX}" # Assuming archive.zip splits into archive.z01 etc.
-                  FILENAME=$(basename "$PART_URL")
-                  
-                  echo "⬇️ Downloading Part $i: $PART_URL to tmp_downloads/$FILENAME"
-                  aria2c \
-                    --split=2 \
-                    --max-connection-per-server=2 \
-                    --min-split-size=90M \
-                    --out="$FILENAME" \
-                    --dir="tmp_downloads" \
-                    "$PART_URL"
-              done
-              
-              # IMPORTANT: After downloading, you need to ensure these parts are copied to the 'downloads/' dir.
-              # If the download process already puts them in tmp_downloads, just move them.
-              echo "Moving downloaded parts to 'downloads/' directory..."
-              mv tmp_downloads/* downloads/
-              rm -rf tmp_downloads # Clean up
-              
-          # --- Existing download logic ---
-          elif [ "$MODE" = "zip" ]; then
+          # Handle multiple URLs if present in the URL_LINE
+          IFS=' ' read -r -a urls <<< "$URL_LINE"
+          for URL in "${urls[@]}"; do
+            if [ -z "$URL" ]; then continue; fi # Skip empty URLs
+            FILENAME=$(basename "$URL")
+            echo "⬇️ Downloading $URL to tmp_downloads/$FILENAME"
+
+            aria2c \
+              --split=2 \
+              --max-connection-per-server=2 \
+              --min-split-size=90M \
+              --out="$FILENAME" \
+              --dir="tmp_downloads" \
+              "$URL"
+          done
+
+          # Process downloaded files: Unzip and split if necessary
+          if [ "$MODE" = "zip" ]; then
             echo "Processing downloaded ZIP archive..."
+            # Assuming only one zip file if MODE is zip
             ZIP_FILE=$(find tmp_downloads -maxdepth 1 -type f -name '*.zip' | head -n 1)
             if [ -n "$ZIP_FILE" ]; then
+              ARCHIVE_NAME="tmp_downloads/archive_$(date +%Y%m%d_%H%M%S).zip"
               echo "Unzipping $ZIP_FILE..."
-              unzip "$ZIP_FILE" -d tmp_downloads/
-              rm "$ZIP_FILE"
+              unzip "$ZIP_FILE" -d tmp_downloads/ # Unzip into tmp_downloads
+              rm "$ZIP_FILE" # Remove the original zip
             else
               echo "Warning: Expected a zip file in tmp_downloads but found none."
             fi
-          elif [ "$MODE" = "normal" ]; then
-            # For normal mode, if download URL was a single file, aria2c might have saved it directly.
-            # We still need to ensure it's in the downloads/ directory.
-            # This part might need adjustment based on how aria2c handles '--out' and '--dir' for single files.
-            # For now, assume aria2c places files in tmp_downloads if --dir is specified.
-            echo "Copying normally downloaded files to 'downloads/'..."
-            mv tmp_downloads/* downloads/
-            rm -rf tmp_downloads
           fi
-          
-          # --- Ensure all files land in 'downloads/' ---
-          # If any previous steps didn't move files to downloads/, this will catch them.
-          # This is especially relevant for the manual_parts mode if aria2c saved directly to downloads/
-          
-          # Re-ensure downloads directory exists
-          mkdir -p downloads
-          
-          # If any files are still in tmp_downloads, move them
-          if [ -n "$(ls -A tmp_downloads)" ]; then
-              echo "Moving any remaining files from tmp_downloads to downloads/..."
-              mv tmp_downloads/* downloads/
-          fi
-          rm -rf tmp_downloads # Final cleanup
 
-          # --- List files for debugging ---
+          echo "Splitting large files into ~90MB chunks..."
+          mkdir -p downloads # Ensure downloads directory exists
+          for FILE in tmp_downloads/*; do
+            [ -f "$FILE" ] || continue # Ensure it's a file
+            SIZE=$(stat -c%s "$FILE")
+            LIMIT=$((90 * 1024 * 1024)) # 90MB limit
+            BASENAME=$(basename "$FILE")
+
+            if [ "$SIZE" -gt "$LIMIT" ]; then
+              echo "✂️ Splitting '$BASENAME' ($(( SIZE / 1024 / 1024 ))MB)..."
+              PART_DIR="tmp_parts_${BASENAME}"
+              mkdir -p "$PART_DIR"
+              mv "$FILE" "$PART_DIR/"
+              
+              echo "Creating zip parts for $BASENAME into 'downloads/'"
+
+              (cd "$PART_DIR" && zip -r -s 90m "../downloads/${BASENAME}.zip" .)
+              
+              rm -rf "$PART_DIR" # Clean up temporary directory
+              
+              echo "✅ Created parts for $BASENAME in downloads/ folder."
+            else
+              echo "Copying '$BASENAME' to downloads/ (under 90MB)"
+              cp "$FILE" "downloads/"
+            fi
+          done
+
+          rm -rf tmp_downloads # Clean up temporary download directory
+
           echo "Files prepared in downloads/:"
           ls -lh downloads/
-
-          # --- Git add for MANUAL parts ---
-          if [ "$MODE" = "manual_parts" ]; then
-              echo "Selecting MANUALLY specified files for this commit..."
-              
-              # The PART_SPEC might be "21-27" or "21,23,25" etc.
-              # We need to construct the files to add based on the suffix convention.
-              # Let's assume file names are like: archive.z01, archive.z02, ...
-              
-              FILES_TO_ADD=""
-              if [[ "$PART_SPEC" == *-* ]]; then # Range like 21-27
-                  START_PART=$(echo "$PART_SPEC" | cut -d'-' -f1)
-                  END_PART=$(echo "$PART_SPEC" | cut -d'-' -f2)
-                  for i in $(seq "$START_PART" "$END_PART"); do
-                      SUFFIX=$(printf "%02d" "$i")
-                      # Construct the expected filename pattern
-                      # This assumes the base name is 'archive' and the extension is '.zXX'
-                      # You MUST adjust 'archive' to your actual base filename.
-                      EXPECTED_FILENAME="archive.z${SUFFIX}" # <<<--- REPLACE 'archive' if needed
-                      FULL_PATH="downloads/${EXPECTED_FILENAME}"
-                      
-                      if [ -f "$FULL_PATH" ]; then
-                          FILES_TO_ADD="$FILES_TO_ADD \"$FULL_PATH\""
-                      else
-                          echo "Warning: Expected file '$FULL_PATH' not found."
-                      fi
-                  done
-              elif [[ "$PART_SPEC" == *,* ]]; then # Comma separated like 21,23,25
-                  IFS=',' read -ra PARTS <<< "$PART_SPEC"
-                  for part_num in "${PARTS[@]}"; do
-                      SUFFIX=$(printf "%02d" "$part_num")
-                      EXPECTED_FILENAME="archive.z${SUFFIX}" # <<<--- REPLACE 'archive' if needed
-                      FULL_PATH="downloads/${EXPECTED_FILENAME}"
-                      
-                      if [ -f "$FULL_PATH" ]; then
-                          FILES_TO_ADD="$FILES_TO_ADD \"$FULL_PATH\""
-                      else
-                          echo "Warning: Expected file '$FULL_PATH' not found."
-                      fi
-                  done
-              else # Single part number, e.g., "21"
-                  SUFFIX=$(printf "%02d" "$PART_SPEC")
-                  EXPECTED_FILENAME="archive.z${SUFFIX}" # <<<--- REPLACE 'archive' if needed
-                  FULL_PATH="downloads/${EXPECTED_FILENAME}"
-                  if [ -f "$FULL_PATH" ]; then
-                      FILES_TO_ADD="$FILES_TO_ADD \"$FULL_PATH\""
-                  else
-                      echo "Warning: Expected file '$FULL_PATH' not found."
-                  fi
-              fi
-
-              if [ -z "$FILES_TO_ADD" ]; then
-                  echo "No files found to add based on manual part specification."
-                  exit 0
-              fi
-              
-              echo "Files to be added in this commit:"
-              echo $FILES_TO_ADD
-              
-              # Git add for these specific files
-              echo "Adding selected files to Git staging area..."
-              git add $FILES_TO_ADD
-
-          # --- Fallback for standard download if manual parts not specified ---
-          else # If MODE is 'zip' or 'normal', use the original chunking logic (first 20)
-              echo "Standard download mode detected. Applying first-20-parts chunking..."
-              FIRST_20_FILES=$(find downloads/ -maxdepth 1 -type f -name 'Overwatch*z*' | sort -V | head -n 20 | paste -sd ' ')
-              
-              if [ -z "$FIRST_20_FILES" ]; then
-                  echo "No split files found matching 'Overwatch*z*'. Trying any file."
-                  FIRST_20_FILES=$(find downloads/ -maxdepth 1 -type f | sort -V | head -n 20 | paste -sd ' ')
-                  if [ -z "$FIRST_20_FILES" ]; then
-                      echo "No files found in 'downloads/' to add. Exiting step."
-                      exit 0
-                  fi
-              fi
-
-              echo "Files to be added in this commit (first 20):"
-              echo "$FIRST_20_FILES"
-              git add $FIRST_20_FILES
+          
+          echo "Selecting parts 21 through 27 for this commit..."
+          # This command finds files starting with 'Overwatch', sorts them version-wise,
+          # then skips the first 20, and takes the next 7 (21-27).
+          SELECTED_FILES=$(find downloads/ -maxdepth 1 -type f -name 'Overwatch*z*' | sort -V | awk 'NR > 20 && NR <= 27' | paste -sd ' ')
+          
+          if [ -z "$SELECTED_FILES" ]; then
+            echo "No files found matching 'Overwatch*z*' pattern for parts 21-27 to add."
+            echo "Attempting to select up to 7 files from 'downloads/' directory as a fallback, starting after the first 20 files."
+            # Fallback: select up to 7 files after the first 20 if the specific pattern fails
+            SELECTED_FILES=$(find downloads/ -maxdepth 1 -type f | sort -V | awk 'NR > 20 && NR <= 27' | paste -sd ' ')
+            if [ -z "$SELECTED_FILES" ]; then
+                echo "No files found in 'downloads/' to add for the specified range. Exiting step."
+                exit 0 # Exit gracefully if nothing to add
+            fi
           fi
 
-      - name: Commit and Push Selected Parts
+          echo "Files to be added in this commit (parts 21-27):"
+          echo "$SELECTED_FILES"
+
+          echo "$SELECTED_FILES" > /tmp/selected_files_list.txt
+
+          echo "Adding selected files to Git staging area..."
+          git add $SELECTED_FILES
+
+      - name: Commit and Push First 20 Parts
         run: |
           BRANCH="${GITHUB_REF_NAME}"
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
+          # Ensure we are on the correct branch
           git checkout $BRANCH
+
+          # Pull latest remote commits safely and rebase
+          # Using --rebase is safer in CI to avoid merge commits
           git pull origin $BRANCH --rebase || echo "No existing remote branch found or pull failed, proceeding."
 
+          # Check if there are staged files to commit
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
-            COMMIT_MSG="Add selected downloaded files [skip ci]"
-            if [ "$MODE" = "manual_parts" ]; then
-                COMMIT_MSG="Add manually specified parts ($PART_SPEC) [skip ci]"
-            fi
-            echo "Committing selected files..."
-            git commit -m "$COMMIT_MSG"
+            echo "Committing the first 20 downloaded files..."
+            git commit -m "Add first 20 downloaded files [skip ci]"
 
-            echo "🚀 Pushing selected files to the 'downloads' branch..."
+            echo "🚀 Pushing the first 20 files to the 'downloads' branch..."
+            # Push to a dedicated branch for these files
             git push origin HEAD:downloads
-            echo "✅ Successfully pushed selected files to the 'downloads' branch."
+            echo "✅ Successfully pushed the first 20 files to the 'downloads' branch."
           fi
