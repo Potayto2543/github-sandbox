@@ -129,31 +129,31 @@ jobs:
           echo "Adding selected files to Git staging area..."
           git add $SELECTED_FILES
 
-      - name: Commit and Push Parts
+      - name: Commit and Push Parts to downloads2
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          # 1. Fetch and checkout the remote downloads branch
-          git fetch origin downloads
-          git checkout downloads || git checkout -b downloads
+          # Create a new branch 'downloads2' if it doesn't exist, or checkout if it does
+          # This will create it locally. The push will create it remotely if needed.
+          if git rev-parse --verify --quiet downloads2; then
+            echo "Branch 'downloads2' already exists locally. Checking it out."
+            git checkout downloads2
+          else
+            echo "Creating new branch 'downloads2'."
+            git checkout -b downloads2
+          fi
 
-          # 2. If we were on a different branch, we need to bring the changes over.
-          # Since we are likely in a CI environment, we can merge the changes 
-          # from the previous checkout point if needed, or just commit directly.
-          
-          # 3. Commit the staged files
+          # Commit the staged files
           if git diff --cached --quiet; then
-            echo "No changes to commit."
+            echo "No new files to commit."
           else
             echo "Committing the selected files..."
+            # Commit to the current branch (downloads2)
             git commit -m "Add parts 21-27 [skip ci]"
           fi
 
-          # 4. Pull any remote changes for the 'downloads' branch to avoid non-fast-forward
-          git pull origin downloads --rebase || echo "No remote changes to rebase."
-
-          # 5. Push to the downloads branch
-          echo "🚀 Pushing files to the 'downloads' branch..."
-          git push origin downloads
-          echo "✅ Successfully pushed to the 'downloads' branch."
+          # Push to the 'downloads2' branch on the remote
+          echo "🚀 Pushing files to the 'downloads2' branch..."
+          git push origin downloads2
+          echo "✅ Successfully pushed to the 'downloads2' branch."
