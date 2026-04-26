@@ -129,28 +129,31 @@ jobs:
           echo "Adding selected files to Git staging area..."
           git add $SELECTED_FILES
 
-      - name: Commit and Push First 20 Parts
+      - name: Commit and Push Parts
         run: |
-          BRANCH="${GITHUB_REF_NAME}"
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          # Ensure we are on the correct branch
-          git checkout $BRANCH
+          # 1. Fetch and checkout the remote downloads branch
+          git fetch origin downloads
+          git checkout downloads || git checkout -b downloads
 
-          # Pull latest remote commits safely and rebase
-          # Using --rebase is safer in CI to avoid merge commits
-          git pull origin $BRANCH --rebase || echo "No existing remote branch found or pull failed, proceeding."
-
-          # Check if there are staged files to commit
+          # 2. If we were on a different branch, we need to bring the changes over.
+          # Since we are likely in a CI environment, we can merge the changes 
+          # from the previous checkout point if needed, or just commit directly.
+          
+          # 3. Commit the staged files
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
-            echo "Committing the first 20 downloaded files..."
-            git commit -m "Add first 20 downloaded files [skip ci]"
-
-            echo "🚀 Pushing the first 20 files to the 'downloads' branch..."
-            # Push to a dedicated branch for these files
-            git push origin HEAD:downloads
-            echo "✅ Successfully pushed the first 20 files to the 'downloads' branch."
+            echo "Committing the selected files..."
+            git commit -m "Add parts 21-27 [skip ci]"
           fi
+
+          # 4. Pull any remote changes for the 'downloads' branch to avoid non-fast-forward
+          git pull origin downloads --rebase || echo "No remote changes to rebase."
+
+          # 5. Push to the downloads branch
+          echo "🚀 Pushing files to the 'downloads' branch..."
+          git push origin downloads
+          echo "✅ Successfully pushed to the 'downloads' branch."
