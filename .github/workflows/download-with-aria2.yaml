@@ -1,54 +1,62 @@
-name: Download & Chunked Push (First 20 Parts)
+name: Download & Chunked Push (First 20 Parts to dl1, Rest to dl2)
 
 on:
-  push:
-    branches:
-      - "**" # Trigger on any branch push
+  workflow_dispatch: # Allows manual triggering
 
 jobs:
-  save-file-chunked-1:
+  save-file-chunked:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Needed to push commits
+      contents: write # Needed to push commits to the repo
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0          # Fetch full history, needed for merging/rebasing
-          ref: ${{ github.ref }}  # Ensure we are on the correct branch
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }} # Use the default GitHub Actions token
 
-      - name: Install aria2
-        run: sudo apt-get install -y aria2
-
-      - name: Extract URLs and download files
-        id: download_files # Added ID for potential future use
+      - name: Install aria2, unzip, zip
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 unzip zip
+
+      - name: Download, extract, and chunk (GENERATE ONCE)
+        id: generate_files # Give this step an ID
+        run: |
+          set -euo pipefail # Exit immediately if a command exits with a non-zero status, or if an unset variable is used.
+
+          # --- Clean workspace ---
+          echo "Cleaning workspace..."
+          rm -rf downloads tmp_downloads tmp_parts_*
+          mkdir -p downloads tmp_downloads
+          echo "Workspace cleaned."
+
+          # --- Get download URL from commit message ---
           MSG=$(git log -1 --pretty=%B)
           echo "Commit message: $MSG"
 
+          URL_LINE=""
           if echo "$MSG" | grep -qP 'download-zip:'; then
             MODE="zip"
             URL_LINE=$(echo "$MSG" | grep -oP 'download-zip:\s*\K.*')
+            echo "Download Mode: ZIP Archive expected"
           elif echo "$MSG" | grep -qP 'download:'; then
             MODE="normal"
             URL_LINE=$(echo "$MSG" | grep -oP 'download:\s*\K.*')
+            echo "Download Mode: Direct URLs expected"
           else
-            echo "❌ No download command found in commit message. Exiting."
+            echo "❌ No download command ('download:' or 'download-zip:') found in commit message. Exiting."
             exit 1
           fi
 
-          echo "Download Mode: $MODE"
-          mkdir -p downloads tmp_downloads
-
-          # Handle multiple URLs if present in the URL_LINE
+          # --- Download files ---
+          echo "Starting downloads..."
           IFS=' ' read -r -a urls <<< "$URL_LINE"
           for URL in "${urls[@]}"; do
             if [ -z "$URL" ]; then continue; fi # Skip empty URLs
             FILENAME=$(basename "$URL")
-            echo "⬇️ Downloading $URL to tmp_downloads/$FILENAME"
-
+            echo "⬇️ Downloading '$URL' to 'tmp_downloads/$FILENAME'"
             aria2c \
               --split=2 \
               --max-connection-per-server=2 \
@@ -57,103 +65,141 @@ jobs:
               --dir="tmp_downloads" \
               "$URL"
           done
+          echo "Downloads complete."
 
-          # Process downloaded files: Unzip and split if necessary
+          # --- Process downloaded ZIP archive if applicable ---
           if [ "$MODE" = "zip" ]; then
             echo "Processing downloaded ZIP archive..."
-            # Assuming only one zip file if MODE is zip
             ZIP_FILE=$(find tmp_downloads -maxdepth 1 -type f -name '*.zip' | head -n 1)
             if [ -n "$ZIP_FILE" ]; then
-              ARCHIVE_NAME="tmp_downloads/archive_$(date +%Y%m%d_%H%M%S).zip"
-              echo "Unzipping $ZIP_FILE..."
-              unzip "$ZIP_FILE" -d tmp_downloads/ # Unzip into tmp_downloads
-              rm "$ZIP_FILE" # Remove the original zip
+              echo "Unzipping '$ZIP_FILE' into 'tmp_downloads/'..."
+              unzip -o "$ZIP_FILE" -d tmp_downloads/ # -o to overwrite if needed
+              rm -f "$ZIP_FILE" # Remove the original zip file
+              echo "Unzipping complete."
             else
-              echo "Warning: Expected a zip file in tmp_downloads but found none."
+              echo "⚠️ Warning: Expected a .zip file in 'tmp_downloads/' but found none. Continuing with other files if any."
             fi
           fi
 
+          # --- Split large files into ~90MB chunks if needed ---
           echo "Splitting large files into ~90MB chunks..."
-          mkdir -p downloads # Ensure downloads directory exists
           for FILE in tmp_downloads/*; do
-            [ -f "$FILE" ] || continue # Ensure it's a file
+            if [ ! -f "$FILE" ]; then continue; fi # Skip directories or non-files
+
             SIZE=$(stat -c%s "$FILE")
             LIMIT=$((90 * 1024 * 1024)) # 90MB limit
             BASENAME=$(basename "$FILE")
 
             if [ "$SIZE" -gt "$LIMIT" ]; then
               echo "✂️ Splitting '$BASENAME' ($(( SIZE / 1024 / 1024 ))MB)..."
-              PART_DIR="tmp_parts_${BASENAME}"
+              PART_DIR="tmp_parts_${BASENAME}_$$" # Use PID for uniqueness
               mkdir -p "$PART_DIR"
-              mv "$FILE" "$PART_DIR/"
-              
-              echo "Creating zip parts for $BASENAME into 'downloads/'"
+              mv "$FILE" "$PART_DIR/" # Move original to temp dir for splitting
 
+              echo "Creating zip parts for '$BASENAME' into 'downloads/' (split size ~90MB)..."
+              # The zip command will create files like: <basename>.zip.001, <basename>.zip.002, etc.
+              # Or, if it's the first time and not resuming, it might create .z01, .z02
+              # We will rely on `sort -V` to order them correctly later.
               (cd "$PART_DIR" && zip -r -s 90m "../downloads/${BASENAME}.zip" .)
-              
+
               rm -rf "$PART_DIR" # Clean up temporary directory
-              
-              echo "✅ Created parts for $BASENAME in downloads/ folder."
+              echo "✅ Created parts for '$BASENAME' in 'downloads/' folder."
             else
-              echo "Copying '$BASENAME' to downloads/ (under 90MB)"
-              cp "$FILE" "downloads/"
+              echo "Copying '$BASENAME' to 'downloads/' (under 90MB)"
+              cp -f "$FILE" "downloads/" # Copy smaller files directly
             fi
           done
-
           rm -rf tmp_downloads # Clean up temporary download directory
 
-          echo "Files prepared in downloads/:"
+          echo "All files prepared in 'downloads/':"
           ls -lh downloads/
-          
-          echo "Selecting parts 21 through 27 for this commit..."
-          # This command finds files starting with 'Overwatch', sorts them version-wise,
-          # then skips the first 20, and takes the next 7 (21-27).
-          SELECTED_FILES=$(find downloads/ -maxdepth 1 -type f -name 'Overwatch*z*' | sort -V | awk 'NR > 20 && NR <= 27' | paste -sd ' ')
-          
-          if [ -z "$SELECTED_FILES" ]; then
-            echo "No files found matching 'Overwatch*z*' pattern for parts 21-27 to add."
-            echo "Attempting to select up to 7 files from 'downloads/' directory as a fallback, starting after the first 20 files."
-            # Fallback: select up to 7 files after the first 20 if the specific pattern fails
-            SELECTED_FILES=$(find downloads/ -maxdepth 1 -type f | sort -V | awk 'NR > 20 && NR <= 27' | paste -sd ' ')
-            if [ -z "$SELECTED_FILES" ]; then
-                echo "No files found in 'downloads/' to add for the specified range. Exiting step."
-                exit 0 # Exit gracefully if nothing to add
-            fi
+
+          # --- Select files based on their final names ---
+          echo "Selecting files for commits..."
+          # This glob tries to match .z01 to .z26 and the final .zip,
+          # or .zip.001 to .zip.026 and final .zip if zip -s created those.
+          # `sort -V` is crucial for version/numeric sorting of parts.
+          mapfile -t ALL_FILES_IN_ORDER < <(find downloads/ -maxdepth 1 -type f \( -name '*.z*' -o -name '*.zip' \) | sort -V)
+
+          if [ "${#ALL_FILES_IN_ORDER[@]}" -lt 27 ]; then
+            echo "❌ Error: Expected at least 27 part files (e.g., .z01 to .z26 and .zip, or .zip.001 to .zip.027), but found only ${#ALL_FILES_IN_ORDER[@]}."
+            echo "Files found in 'downloads/':"
+            printf ' - %s\n' "${ALL_FILES_IN_ORDER[@]}"
+            exit 1
           fi
 
-          echo "Files to be added in this commit (parts 21-27):"
-          echo "$SELECTED_FILES"
+          # Split into two groups: first 20 for dl1, next 7 for dl2
+          PARTS_DL1=("${ALL_FILES_IN_ORDER[@]:0:20}")   # Selects first 20 files (index 0 to 19)
+          PARTS_DL2=("${ALL_FILES_IN_ORDER[@]:20:7}")   # Selects next 7 files (index 20 to 26)
 
-          echo "$SELECTED_FILES" > /tmp/selected_files_list.txt
+          echo "Files for dl1 (parts 1-20):"
+          printf ' - %s\n' "${PARTS_DL1[@]}"
+          echo "Files for dl2 (parts 21-27):"
+          printf ' - %s\n' "${PARTS_DL2[@]}"
 
-          echo "Adding selected files to Git staging area..."
-          git add $SELECTED_FILES
+          # Store the selected files for the next step
+          echo "### DL1_FILES_TO_ADD ###" > /tmp/commit_files_list.txt
+          printf '%s\n' "${PARTS_DL1[@]}" >> /tmp/commit_files_list.txt
+          echo "### DL2_FILES_TO_ADD ###" >> /tmp/commit_files_list.txt
+          printf '%s\n' "${PARTS_DL2[@]}" >> /tmp/commit_files_list.txt
+          echo "File lists generated for commits."
 
-      - name: Commit and Push Parts to downloads2
+      - name: Commit and Push to dl1 and dl2
         run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+          set -euo pipefail
 
-          # Create a new branch 'downloads2' if it doesn't exist, or checkout if it does
-          # This will create it locally. The push will create it remotely if needed.
-          if git rev-parse --verify --quiet downloads2; then
-            echo "Branch 'downloads2' already exists locally. Checking it out."
-            git checkout downloads2
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # --- Prepare for the first commit (dl1) ---
+          echo "Preparing to commit to dl1..."
+          # Ensure the branch exists remotely or create it locally if not
+          if git show-ref --verify --quiet refs/remotes/origin/dl1; then
+            echo "Branch 'dl1' exists remotely. Checking out and pulling."
+            git checkout -B dl1 origin/dl1
           else
-            echo "Creating new branch 'downloads2'."
-            git checkout -b downloads2
+            echo "Branch 'dl1' does not exist remotely. Creating new local branch 'dl1'."
+            git checkout -B dl1
           fi
 
-          # Commit the staged files
-          if git diff --cached --quiet; then
-            echo "No new files to commit."
+          # Add only the files designated for dl1
+          git add -f --allow-empty -- $(grep "### DL1_FILES_TO_ADD ###" /tmp/commit_files_list.txt -A 20 | grep -v "###" | grep -v "DL1_FILES_TO_ADD")
+
+          # Commit if there are changes
+          if ! git diff --cached --quiet; then
+            echo "Committing parts 1-20 to dl1..."
+            git commit -m "Add parts 1-20 [skip ci]"
+            echo "Pushing dl1..."
+            git push -f origin dl1 # Force push to ensure it reflects the generated state
           else
-            echo "Committing the selected files..."
-            # Commit to the current branch (downloads2)
+            echo "No changes found for dl1. Skipping commit and push."
+          fi
+
+          # --- Prepare for the second commit (dl2) ---
+          echo "Preparing to commit to dl2..."
+          # Reset index and staging area to ensure dl2 commit only includes its files
+          git reset HEAD --hard # Discard any staged/unstaged changes from dl1 commit
+
+          # Ensure the branch exists remotely or create it locally if not
+          if git show-ref --verify --quiet refs/remotes/origin/dl2; then
+            echo "Branch 'dl2' exists remotely. Checking out and pulling."
+            git checkout -B dl2 origin/dl2
+          else
+            echo "Branch 'dl2' does not exist remotely. Creating new local branch 'dl2'."
+            git checkout -B dl2
+          fi
+
+          # Add only the files designated for dl2
+          git add -f --allow-empty -- $(grep "### DL2_FILES_TO_ADD ###" /tmp/commit_files_list.txt -A 7 | grep -v "###" | grep -v "DL2_FILES_TO_ADD")
+
+          # Commit if there are changes
+          if ! git diff --cached --quiet; then
+            echo "Committing parts 21-27 to dl2..."
             git commit -m "Add parts 21-27 [skip ci]"
+            echo "Pushing dl2..."
+            git push -f origin dl2 # Force push to ensure it reflects the generated state
+          else
+            echo "No changes found for dl2. Skipping commit and push."
           fi
 
-          # Push to the 'downloads2' branch on the remote
-          echo "🚀 Pushing files to the 'downloads2' branch..."
-          git push origin downloads2
-          echo "✅ Successfully pushed to the 'downloads2' branch."
+          echo "All commits and pushes completed."
