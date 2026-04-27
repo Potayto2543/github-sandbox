@@ -1,0 +1,122 @@
+name: Verify Overwatch Parts Against Remote Zip
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout dl2
+        uses: actions/checkout@v4
+        with:
+          ref: dl2
+
+      - name: Install needed tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget p7zip-full
+
+      - name: Download reference ZIP
+        env:
+          ZIP_URL: "https://waifu.ayakamods.com/public.php/dav/files/obcCESBTj9Hy5oT/Overwatch%20Beta%20(COMPILED%20BUILD)%20UPDATED%204.20.26.zip"   # 🔁 Replace with real URL!
+        run: |
+          echo "Downloading reference ZIP..."
+          wget -q "$ZIP_URL" -O /tmp/reference.zip
+          echo "Checksum of downloaded reference:"
+          sha256sum /tmp/reference.zip | tee /tmp/reference_checksum.txt
+
+      - name: Copy 27 parts from dl2
+        run: |
+          mkdir -p /tmp/parts
+          cp downloads/Overwatch* /tmp/parts/
+          echo "Files found:"
+          ls -1 /tmp/parts
+
+          COUNT=$(ls -1 /tmp/parts | wc -l)
+          if [ "$COUNT" -ne 27 ]; then
+            echo "❌ ERROR: Expected 27 parts but found $COUNT"
+            exit 1
+          fi
+
+      - name: Checksum each part individually
+        run: |
+          cd /tmp/parts
+          echo "Calculating per-part checksums..."
+          sha256sum * | sort | tee /tmp/all_parts_checksums.txt
+
+      - name: Recombine ZIP parts
+        run: |
+          cd /tmp/parts
+          echo "Reconstructing full ZIP from parts..."
+
+          # ZIP multipart format must be cat in correct order
+          cat \
+            *.zip.z01 \
+            *.zip.z02 \
+            *.zip.z03 \
+            *.zip.z04 \
+            *.zip.z05 \
+            *.zip.z06 \
+            *.zip.z07 \
+            *.zip.z08 \
+            *.zip.z09 \
+            *.zip.z10 \
+            *.zip.z11 \
+            *.zip.z12 \
+            *.zip.z13 \
+            *.zip.z14 \
+            *.zip.z15 \
+            *.zip.z16 \
+            *.zip.z17 \
+            *.zip.z18 \
+            *.zip.z19 \
+            *.zip.z20 \
+            *.zip.z21 \
+            *.zip.z22 \
+            *.zip.z23 \
+            *.zip.z24 \
+            *.zip.z25 \
+            *.zip.z26 \
+            *.zip       \
+            > /tmp/combined.zip
+
+          echo "Combined ZIP checksum:"
+          sha256sum /tmp/combined.zip | tee /tmp/combined_checksum.txt
+
+      - name: Compare combined ZIP with reference
+        run: |
+          COMBINED=$(cut -d ' ' -f1 /tmp/combined_checksum.txt)
+          REFERENCE=$(cut -d ' ' -f1 /tmp/reference_checksum.txt)
+
+          echo "Combined:  $COMBINED"
+          echo "Reference: $REFERENCE"
+
+          if [ "$COMBINED" = "$REFERENCE" ]; then
+            echo "✅ SUCCESS — Combined archive matches reference URL."
+          else
+            echo "❌ Archive mismatch!"
+            echo "Identifying corrupted parts..."
+
+            cd /tmp/parts
+            REF_CHECKSUMS=$(sha256sum * | sort)
+
+            # Check each part against reference checksum
+            for PART in *.zip.z*; do
+              PART_CHECK=$(sha256sum "$PART" | cut -d ' ' -f1)
+              REF_PART_CHECK=$(echo "$REF_CHECKSUMS" | grep "$PART" | cut -d ' ' -f1)
+
+              if [ "$PART_CHECK" != "$REF_PART_CHECK" ]; then
+                echo "❌ Corrupted part detected: $PART (Expected: $REF_PART_CHECK, Found: $PART_CHECK)"
+              fi
+            done
+            exit 1
+          fi
+
+      - name: Upload checksum reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksum-report
+          path: /tmp/*checksum*.txt
