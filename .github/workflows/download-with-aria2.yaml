@@ -144,62 +144,69 @@ jobs:
           printf '%s\n' "${PARTS_DL2[@]}" >> /tmp/commit_files_list.txt
           echo "File lists generated for commits."
 
-      - name: Commit and Push to dl1 and dl2
-        run: |
-          set -euo pipefail
+          - name: Commit and Push to dl1 and dl2
+          run: |
+            set -euo pipefail
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # --- Prepare for the first commit (dl1) ---
-          echo "Preparing to commit to dl1..."
-          # Ensure the branch exists remotely or create it locally if not
-          if git show-ref --verify --quiet refs/remotes/origin/dl1; then
-            echo "Branch 'dl1' exists remotely. Checking out and pulling."
-            git checkout -B dl1 origin/dl1
-          else
-            echo "Branch 'dl1' does not exist remotely. Creating new local branch 'dl1'."
-            git checkout -B dl1
-          fi
+            # --- Prepare for the first commit (dl1) ---
+            echo "Preparing to commit to dl1..."
+            if git show-ref --verify --quiet refs/remotes/origin/dl1; then
+              echo "Branch 'dl1' exists remotely. Checking out and pulling."
+              git checkout -B dl1 origin/dl1
+            else
+              echo "Branch 'dl1' does not exist remotely. Creating new local branch 'dl1'."
+              git checkout -B dl1
+            fi
 
-          # Add only the files designated for dl1
-          git add -f --allow-empty -- $(grep "### DL1_FILES_TO_ADD ###" /tmp/commit_files_list.txt -A 20 | grep -v "###" | grep -v "DL1_FILES_TO_ADD")
+            DL1_FILES=( $(grep "### DL1_FILES_TO_ADD ###" /tmp/commit_files_list.txt -A 20 \
+              | grep -v "###" | grep -v "DL1_FILES_TO_ADD" || true) )
 
-          # Commit if there are changes
-          if ! git diff --cached --quiet; then
-            echo "Committing parts 1-20 to dl1..."
-            git commit -m "Add parts 1-20 [skip ci]"
-            echo "Pushing dl1..."
-            git push -f origin dl1 # Force push to ensure it reflects the generated state
-          else
-            echo "No changes found for dl1. Skipping commit and push."
-          fi
+            if [ "${#DL1_FILES[@]}" -gt 0 ]; then
+              git add -f -- "${DL1_FILES[@]}"
+            else
+              echo "No files to add for dl1 (DL1_FILES_TO_ADD list was empty)."
+            fi
 
-          # --- Prepare for the second commit (dl2) ---
-          echo "Preparing to commit to dl2..."
-          # Reset index and staging area to ensure dl2 commit only includes its files
-          git reset HEAD --hard # Discard any staged/unstaged changes from dl1 commit
-
-          # Ensure the branch exists remotely or create it locally if not
-          if git show-ref --verify --quiet refs/remotes/origin/dl2; then
-            echo "Branch 'dl2' exists remotely. Checking out and pulling."
-            git checkout -B dl2 origin/dl2
-          else
-            echo "Branch 'dl2' does not exist remotely. Creating new local branch 'dl2'."
-            git checkout -B dl2
-          fi
-
-          # Add only the files designated for dl2
-          git add -f --allow-empty -- $(grep "### DL2_FILES_TO_ADD ###" /tmp/commit_files_list.txt -A 7 | grep -v "###" | grep -v "DL2_FILES_TO_ADD")
-
-          # Commit if there are changes
-          if ! git diff --cached --quiet; then
-            echo "Committing parts 21-27 to dl2..."
-            git commit -m "Add parts 21-27 [skip ci]"
-            echo "Pushing dl2..."
-            git push -f origin dl2 # Force push to ensure it reflects the generated state
-          else
-            echo "No changes found for dl2. Skipping commit and push."
-          fi
-
-          echo "All commits and pushes completed."
+            if ! git diff --cached --quiet; then
+              echo "Committing parts 1-20 to dl1..."
+              git commit -m "Add parts 1-20 [skip ci]"
+              echo "Pushing dl1..."
+              git push -f origin dl1
+            else
+              echo "No changes found for dl1. Skipping commit and push."
+            fi
+        
+            # --- Prepare for the second commit (dl2) ---
+            echo "Preparing to commit to dl2..."
+            git reset --hard HEAD
+        
+            if git show-ref --verify --quiet refs/remotes/origin/dl2; then
+              echo "Branch 'dl2' exists remotely. Checking out and pulling."
+              git checkout -B dl2 origin/dl2
+            else
+              echo "Branch 'dl2' does not exist remotely. Creating new local branch 'dl2'."
+              git checkout -B dl2
+            fi
+        
+            DL2_FILES=( $(grep "### DL2_FILES_TO_ADD ###" /tmp/commit_files_list.txt -A 7 \
+              | grep -v "###" | grep -v "DL2_FILES_TO_ADD" || true) )
+        
+            if [ "${#DL2_FILES[@]}" -gt 0 ]; then
+              git add -f -- "${DL2_FILES[@]}"
+            else
+              echo "No files to add for dl2 (DL2_FILES_TO_ADD list was empty)."
+            fi
+        
+            if ! git diff --cached --quiet; then
+              echo "Committing parts 21-27 to dl2..."
+              git commit -m "Add parts 21-27 [skip ci]"
+              echo "Pushing dl2..."
+              git push -f origin dl2
+            else
+              echo "No changes found for dl2. Skipping commit and push."
+            fi
+        
+              echo "All commits and pushes completed."
